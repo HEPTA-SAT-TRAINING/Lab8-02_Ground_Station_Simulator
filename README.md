@@ -4,7 +4,7 @@ A browser-based ground station simulator for HEPTA-SAT training. This repository
 
 ## Live Site
 
-https://hepta-sat-training.github.io/HEPTA-SAT-Grand-Station-Simulator-Web/
+https://hepta-sat-training.github.io/Lab8-02_Ground_Station_Simulator/
 
 ## Features
 
