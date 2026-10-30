@@ -472,7 +472,7 @@
       border: 1px solid #1d2c35;
       background: #081219;
       display: grid;
-      grid-template-columns: 1.2fr 1.8fr;
+      grid-template-columns: minmax(0, 1fr);
       align-items: center;
       color: #b8c8d4;
       font-size: 13px;
@@ -518,6 +518,24 @@
       height: 24px;
       padding: 0 10px;
       font-size: 11px;
+    }
+
+    .xbee-mode-select {
+      width: auto;
+      min-width: 170px;
+      height: 24px;
+      padding: 0 24px 0 8px;
+      border: 1px solid #284456;
+      border-radius: 4px;
+      color: #dce8f2;
+      background: #0b2230;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .xbee-mode-select:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
     }
 
 
@@ -2147,6 +2165,12 @@
       box-shadow: inset 0 1px 2px rgba(24, 70, 122, 0.06);
     }
 
+    .xbee-mode-select {
+      border-color: #c9d8eb;
+      background: #ffffff;
+      color: #09245c;
+    }
+
     .tle-textarea:focus,
     .command-input:focus {
       border-color: #0a66dc;
@@ -2673,6 +2697,11 @@
         Port: <span class="port-name" id="selected-port-name">Disconnected</span>
         <span id="port-status-dot" class="status-dot disconnected"></span>
         <span id="port-status-text">Disconnected</span>
+        <label for="xbee-mode-select">XBee:</label>
+        <select class="xbee-mode-select" id="xbee-mode-select" title="The GS XBee UART operating mode">
+          <option value="transparent">Transparent (AP=0)</option>
+          <option value="api">API (AP=1 / Real RSSI)</option>
+        </select>
         <button class="gs-button" id="select-port-button">Select Port</button>
         <button class="gs-button" id="connect-port-button">Connect</button>
         <button class="gs-button danger" id="disconnect-port-button" disabled>Disconnect</button>
@@ -2764,6 +2793,13 @@
     let xbeeWriter = null;
     let serialPortSelectionInProgress = false;
 
+    let xbeeApiModule = null;
+    let xbeeApiParser = null;
+    let lastXbeeReceiveFrame = null;
+    let nextXbeeApiFrameId = 1;
+    let xbeeDbQueryPending = false;
+    let xbeeDbQueryTimeout = null;
+
     const XBEE_BAUD_RATE = 38400;
     const USE_BACKEND_COMMAND_API = false;
     const RECEIVER_START_API_URL = "http://127.0.0.1:8765/start-receiver";
@@ -2771,6 +2807,17 @@
     const COMMAND_API_HEALTH_URL = "http://127.0.0.1:8765/health";
     const DIRECT_SERIAL_COMMAND_LINE_ENDING = "";
     const USE_SIMULATED_RSSI = false;
+    const DEMO_TELEMETRY_ENABLED = (() => {
+      const isEnabled = search => ["1", "true", "on"].includes(
+        String(new URLSearchParams(search).get("demo") || "").toLowerCase()
+      );
+      if (isEnabled(window.location.search)) return true;
+      try {
+        return window.parent !== window && isEnabled(window.parent.location.search);
+      } catch (error) {
+        return false;
+      }
+    })();
     const RSSI_SIM_REFERENCE_RANGE_KM = 500;
     const RSSI_SIM_REFERENCE_DBM = -45;
     const RSSI_SIM_NO_SIGNAL_DBM = -98;
@@ -2796,6 +2843,7 @@
     const selectPortButton = document.getElementById("select-port-button");
     const connectPortButton = document.getElementById("connect-port-button");
     const disconnectPortButton = document.getElementById("disconnect-port-button");
+    const xbeeModeSelect = document.getElementById("xbee-mode-select");
     // Disconnect and test-send buttons were removed from the UI
 
     const rssiValueEl = document.getElementById("rssi-value");
@@ -3132,6 +3180,9 @@
     let rssiHistory = [];
     let simulatedRssiTimer = null;
     let simulatedRssiDbm = -64;
+    let demoTelemetryActive = false;
+    let demoTelemetryTimer = null;
+    let demoTelemetrySequence = 0;
     let currentPass = {
       aosDate: null,
       losDate: null
@@ -3745,6 +3796,7 @@
     }
 
     function isReceiverConnected() {
+      if (demoTelemetryActive) return true;
       if (USE_BACKEND_COMMAND_API) return backendReceiverConnected;
       return typeof isXbeePortOpen === "function" && isXbeePortOpen();
     }
@@ -4551,7 +4603,6 @@
       if (serialTextBuffer.length > 8192) {
         serialTextBuffer = serialTextBuffer.slice(-8192);
       }
-      updateRssiFromReceivedText(text);
       const telemetryAllowed = isTelemetryDisplayAllowed();
 
       // Web Serial read() boundaries are arbitrary.  XBee can split a single
@@ -4564,6 +4615,9 @@
       lines.forEach(line => {
         const trimmed = line.replace(/\r$/, "").trim();
         if (trimmed.length > 0) {
+          // Parse RSSI only after LF completes the record. Web Serial chunks
+          // are arbitrary and may split a token such as "RSSI=-64".
+          updateRssiFromReceivedText(trimmed);
           feedHexTextPacketStream(trimmed);
           if (telemetryAllowed && /(?:TEMP|BUS|V5|V3V3|SAP|ISOL|IBUS|ICHG|AX|AY|AZ|GX|GY|GZ|MX|MY|MZ)\s*=/.test(trimmed)) {
             const lineBytes = new TextEncoder().encode(trimmed);
@@ -4576,6 +4630,45 @@
       });
 
       for (let i = 0; i < counted; i++) incrementRxCommandCount();
+    }
+
+    async function startDemoTelemetry() {
+      if (!DEMO_TELEMETRY_ENABLED || demoTelemetryTimer) return;
+
+      demoTelemetryActive = true;
+      updatePortStatus("connected", "Demo data");
+      updateFooterPort(`Demo telemetry / ${XBEE_BAUD_RATE} bps`);
+      if (selectPortButton) selectPortButton.disabled = true;
+      updateTelemetryReceiveGate();
+
+      try {
+        const { createDemoTelemetryLines } = await import("./demo-telemetry.js");
+        const emitSample = () => {
+          const lines = createDemoTelemetryLines(demoTelemetrySequence++);
+          // Deliberately split RSSI across chunks. This is the failure mode the
+          // demo is intended to reproduce and verify.
+          const firstLine = lines[0];
+          const splitAt = Math.min(4, firstLine.length);
+          handleReceivedSerialText(firstLine.slice(0, splitAt));
+          handleReceivedSerialText(firstLine.slice(splitAt));
+          handleReceivedSerialText(lines[1]);
+        };
+        emitSample();
+        demoTelemetryTimer = window.setInterval(emitSample, 1000);
+      } catch (error) {
+        console.error("Could not start demo telemetry", error);
+        demoTelemetryActive = false;
+        updatePortStatus("disconnected", "Demo error");
+        updateFooterPort("Demo error");
+        updateTelemetryReceiveGate();
+      }
+    }
+
+    function stopDemoTelemetry() {
+      if (demoTelemetryTimer) window.clearInterval(demoTelemetryTimer);
+      demoTelemetryTimer = null;
+      demoTelemetryActive = false;
+      demoTelemetrySequence = 0;
     }
 
 
@@ -4953,15 +5046,27 @@
         return;
       }
 
+      if (isXbeeApiMode() && !lastXbeeReceiveFrame) {
+        alert("Wait until telemetry is received once. The GS needs the HEPTA XBee address before sending an API command.");
+        return;
+      }
+
       try {
         const encoder = new TextEncoder();
         const packetInfo = consumeCommandPacketInfo(commandText);
         const directCommandBytes = encoder.encode(`${packetInfo.command}${DIRECT_SERIAL_COMMAND_LINE_ENDING}`);
-        await xbeeWriter.write(directCommandBytes);
+        const transmittedBytes = isXbeeApiMode()
+          ? xbeeApiModule.buildTransmitRequest(
+              lastXbeeReceiveFrame,
+              directCommandBytes,
+              allocateXbeeApiFrameId(),
+            )
+          : directCommandBytes;
+        await xbeeWriter.write(transmittedBytes);
         updateCommandLog({
           command: formatCommandPacketLog(
             packetInfo.command,
-            bytesToHex(directCommandBytes),
+            bytesToHex(transmittedBytes),
             getExpectedAckLabel(packetInfo.command),
             packetInfo.label
           ),
@@ -4997,6 +5102,7 @@
       backendReceiverConnected = false;
       if (selectPortButton) selectPortButton.disabled = true;
       if (connectPortButton) connectPortButton.disabled = false;
+      if (xbeeModeSelect) xbeeModeSelect.disabled = true;
       selectedPortName.textContent = "Python Backend";
       updatePortStatus("disconnected", "Waiting to connect");
       updateFooterPort("Python Backend");
@@ -5034,6 +5140,95 @@
       }
     }
 
+    function isXbeeApiMode() {
+      return xbeeModeSelect && xbeeModeSelect.value === "api";
+    }
+
+    function allocateXbeeApiFrameId() {
+      const frameId = nextXbeeApiFrameId;
+      nextXbeeApiFrameId = frameId >= 0xFF ? 1 : frameId + 1;
+      return frameId;
+    }
+
+    function clearXbeeDbQueryPending() {
+      xbeeDbQueryPending = false;
+      if (xbeeDbQueryTimeout) window.clearTimeout(xbeeDbQueryTimeout);
+      xbeeDbQueryTimeout = null;
+    }
+
+    function resetXbeeApiSession() {
+      xbeeApiParser?.reset();
+      lastXbeeReceiveFrame = null;
+      nextXbeeApiFrameId = 1;
+      clearXbeeDbQueryPending();
+    }
+
+    async function prepareXbeeApiMode() {
+      if (!xbeeApiModule) xbeeApiModule = await import("./xbee-api.js");
+      xbeeApiParser = new xbeeApiModule.XBeeApiParser();
+      resetXbeeApiSession();
+    }
+
+    function handleReceivedRadioPayload(value) {
+      if (!value || value.length === 0) return;
+
+      // Demultiplex Lab5-05 image packets before feeding the existing
+      // binary/text telemetry parsers. This keeps reception asynchronous and
+      // prevents JPEG bytes from being mistaken for telemetry.
+      if (imageStreamReceiver) {
+        imageStreamReceiver.push(value);
+      } else if (pendingImageReceiverBytes + value.length <= MAX_PENDING_IMAGE_RECEIVER_BYTES) {
+        const copy = value.slice();
+        pendingImageReceiverChunks.push(copy);
+        pendingImageReceiverBytes += copy.length;
+      } else {
+        // Module startup must never stop ordinary telemetry reception.
+        handleReceivedSerialBytes(value);
+        handleReceivedSerialText(telemetryTextDecoder.decode(value, { stream: true }));
+      }
+    }
+
+    async function requestLastPacketRssi() {
+      if (!xbeeApiModule || !xbeeWriter || xbeeDbQueryPending) return;
+
+      xbeeDbQueryPending = true;
+      try {
+        const request = xbeeApiModule.buildLocalAtCommand("DB", allocateXbeeApiFrameId());
+        await xbeeWriter.write(request);
+        xbeeDbQueryTimeout = window.setTimeout(clearXbeeDbQueryPending, 1000);
+      } catch (error) {
+        clearXbeeDbQueryPending();
+        throw error;
+      }
+    }
+
+    async function handleXbeeApiSerialBytes(value) {
+      if (!xbeeApiParser) return;
+
+      for (const frame of xbeeApiParser.push(value)) {
+        if (frame.kind === "receive") {
+          lastXbeeReceiveFrame = frame;
+          if (Number.isFinite(frame.rssiDbm)) {
+            updateRssiDisplay(frame.rssiDbm);
+          }
+          handleReceivedRadioPayload(frame.payload);
+
+          // 0x80/0x81 contain RSSI in the receive frame. 0x90/0x91 do not,
+          // so ask the local GS XBee for the last-packet RSSI using ATDB.
+          if (!Number.isFinite(frame.rssiDbm)) {
+            try {
+              await requestLastPacketRssi();
+            } catch (error) {
+              console.error("Could not query XBee RSSI with ATDB", error);
+            }
+          }
+        } else if (frame.kind === "at-response" && frame.command === "DB") {
+          clearXbeeDbQueryPending();
+          if (Number.isFinite(frame.rssiDbm)) updateRssiDisplay(frame.rssiDbm);
+        }
+      }
+    }
+
     async function startXbeeReadLoop() {
       if (!xbeePort || !xbeePort.readable || xbeeReadLoopActive) return;
 
@@ -5045,20 +5240,8 @@
           const { value, done } = await xbeeReader.read();
           if (done) break;
           if (value) {
-            // Demultiplex Lab5-05 image packets before feeding the existing
-            // binary/text telemetry parsers. This keeps reception asynchronous
-            // and prevents JPEG bytes from being mistaken for telemetry.
-            if (imageStreamReceiver) {
-              imageStreamReceiver.push(value);
-            } else if (pendingImageReceiverBytes + value.length <= MAX_PENDING_IMAGE_RECEIVER_BYTES) {
-              const copy = value.slice();
-              pendingImageReceiverChunks.push(copy);
-              pendingImageReceiverBytes += copy.length;
-            } else {
-              // Module startup must never stop ordinary telemetry reception.
-              handleReceivedSerialBytes(value);
-              handleReceivedSerialText(telemetryTextDecoder.decode(value, { stream: true }));
-            }
+            if (isXbeeApiMode()) await handleXbeeApiSerialBytes(value);
+            else handleReceivedRadioPayload(value);
           }
         }
       } catch (error) {
@@ -5137,18 +5320,21 @@
         portStatusText.className = "green";
         if (connectPortButton) connectPortButton.disabled = true;
         if (disconnectPortButton) disconnectPortButton.disabled = false;
+        if (xbeeModeSelect) xbeeModeSelect.disabled = true;
       } else if (status === "selected") {
         setPortDot("selected");
         portStatusText.textContent = text || "Selected";
         portStatusText.className = "orange";
         if (connectPortButton) connectPortButton.disabled = false;
         if (disconnectPortButton) disconnectPortButton.disabled = true;
+        if (xbeeModeSelect && !USE_BACKEND_COMMAND_API) xbeeModeSelect.disabled = false;
       } else {
         setPortDot("disconnected");
         portStatusText.textContent = text || "Disconnected";
         portStatusText.className = "";
         if (connectPortButton) connectPortButton.disabled = false;
         if (disconnectPortButton) disconnectPortButton.disabled = true;
+        if (xbeeModeSelect && !USE_BACKEND_COMMAND_API) xbeeModeSelect.disabled = false;
       }
     }
 
@@ -5263,11 +5449,14 @@
         }
 
         if (xbeeWriter && isXbeePortOpen()) {
-          updatePortStatus("connected", "Connected");
+          updatePortStatus("connected", isXbeeApiMode() ? "Connected (API)" : "Connected");
           startSimulatedRssi();
           startXbeeReadLoop();
           return true;
         }
+
+        if (isXbeeApiMode()) await prepareXbeeApiMode();
+        else resetXbeeApiSession();
 
         await xbeePort.open({ baudRate: XBEE_BAUD_RATE });
 
@@ -5275,9 +5464,9 @@
 
         const portName = getPortDisplayName(xbeePort);
 
-        updatePortStatus("connected", "Connected");
+        updatePortStatus("connected", isXbeeApiMode() ? "Connected (API)" : "Connected");
         selectedPortName.textContent = portName;
-        updateFooterPort(`${portName} / ${XBEE_BAUD_RATE} bps`);
+        updateFooterPort(`${portName} / ${isXbeeApiMode() ? "API AP=1" : "Transparent AP=0"} / ${XBEE_BAUD_RATE} bps`);
         startSimulatedRssi();
         startXbeeReadLoop();
         return true;
@@ -5300,9 +5489,11 @@
     async function disconnectXbeePort() {
       xbeeReadLoopActive = false;
       stopSimulatedRssi();
+      stopDemoTelemetry();
       imageStreamReceiver?.reset();
       pendingImageReceiverChunks = [];
       pendingImageReceiverBytes = 0;
+      resetXbeeApiSession();
 
       try {
         if (xbeeReader) {
@@ -8332,12 +8523,14 @@ ${tle.line2}`;
     drawOrbitMap();
 
     setTleSource("sat1");
+    startDemoTelemetry();
   </script>
 
     <script>
       // Poll local data.json (written by receive_data.py) and feed into existing handlers
       async function pollBackendData() {
         try {
+          if (demoTelemetryActive) return;
           if (USE_BACKEND_COMMAND_API && !backendReceiverConnected) return;
           if (!USE_BACKEND_COMMAND_API && typeof isXbeePortOpen === 'function' && isXbeePortOpen()) return;
 

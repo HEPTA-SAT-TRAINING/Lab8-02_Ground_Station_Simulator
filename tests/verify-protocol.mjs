@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import { StreamReceiver } from "../public/hepta-image-receiver.js";
+import { createDemoTelemetryLines } from "../public/demo-telemetry.js";
+import {
+  XBeeApiParser,
+  buildLocalAtCommand,
+  buildTransmitRequest,
+  encodeApiFrame,
+} from "../public/xbee-api.js";
 import { crc16CcittFalse as crc16 } from "../public/vendor/hepta-serial-monitor/docs/crc16.js";
 import {
   FORMAT_JPEG,
@@ -152,6 +159,77 @@ assert.deepEqual(concat(...telemetryAfterFailure), telemetryAfter);
 
 assert.equal(crc16(new TextEncoder().encode("123456789")), 0x29B1);
 
+// XBee API mode exposes the receiver-side RSSI while preserving the original
+// HEPTA RF payload. The stream parser must tolerate arbitrary serial chunks.
+const xbeePayload = new TextEncoder().encode("TEMP=23.40,BUS=3.780\r\n");
+const rx16ApiFrame = encodeApiFrame(new Uint8Array([
+  0x81, 0x12, 0x34, 0x40, 0x01, ...xbeePayload,
+]));
+const xbeeParser = new XBeeApiParser();
+assert.deepEqual(xbeeParser.push(rx16ApiFrame.slice(0, 2)), []);
+assert.deepEqual(xbeeParser.push(rx16ApiFrame.slice(2, 7)), []);
+const [rx16] = xbeeParser.push(rx16ApiFrame.slice(7));
+assert.equal(rx16.kind, "receive");
+assert.equal(rx16.frameType, 0x81);
+assert.deepEqual(rx16.source16, new Uint8Array([0x12, 0x34]));
+assert.equal(rx16.rssiDbm, -64);
+assert.deepEqual(rx16.payload, xbeePayload);
+
+const source64 = new Uint8Array([0x00, 0x13, 0xA2, 0x00, 0x41, 0x52, 0x53, 0x54]);
+const rx64ApiFrame = encodeApiFrame(new Uint8Array([
+  0x80, ...source64, 0x5D, 0x00, 0x61,
+]));
+const [rx64] = xbeeParser.push(rx64ApiFrame);
+assert.equal(rx64.rssiDbm, -93);
+assert.deepEqual(rx64.source64, source64);
+assert.deepEqual(rx64.payload, new Uint8Array([0x61]));
+
+// Newer 802.15.4 output (0x90) has no inline RSSI; ATDB supplies the RSSI of
+// the most recently received RF packet.
+const rx90ApiFrame = encodeApiFrame(new Uint8Array([
+  0x90,
+  ...source64,
+  0x7D, 0x84,
+  0x01,
+  0x62,
+]));
+const [rx90] = xbeeParser.push(rx90ApiFrame);
+assert.equal(rx90.kind, "receive");
+assert.equal(rx90.rssiDbm, null);
+assert.deepEqual(rx90.payload, new Uint8Array([0x62]));
+
+const atDbResponse = encodeApiFrame(new Uint8Array([
+  0x88, 0x22, 0x44, 0x42, 0x00, 0x4A,
+]));
+const [db] = xbeeParser.push(atDbResponse);
+assert.equal(db.kind, "at-response");
+assert.equal(db.command, "DB");
+assert.equal(db.status, 0);
+assert.equal(db.rssiDbm, -74);
+
+const atDbRequest = buildLocalAtCommand("DB", 0x22);
+const [atRequest] = xbeeParser.push(atDbRequest);
+assert.equal(atRequest.kind, "other");
+assert.deepEqual(atRequest.frameData, new Uint8Array([0x08, 0x22, 0x44, 0x42]));
+
+const tx16Frame = buildTransmitRequest(rx16, new Uint8Array([0x70]), 0x33);
+const [tx16] = xbeeParser.push(tx16Frame);
+assert.deepEqual(
+  tx16.frameData,
+  new Uint8Array([0x01, 0x33, 0x12, 0x34, 0x00, 0x70]),
+);
+
+const tx64Frame = buildTransmitRequest(rx64, new Uint8Array([0x61]), 0x34);
+const [tx64] = xbeeParser.push(tx64Frame);
+assert.deepEqual(
+  tx64.frameData,
+  new Uint8Array([0x00, 0x34, ...source64, 0x00, 0x61]),
+);
+
+const corruptApiFrame = rx16ApiFrame.slice();
+corruptApiFrame[corruptApiFrame.length - 1] ^= 0x01;
+assert.deepEqual(xbeeParser.push(concat(corruptApiFrame, rx64ApiFrame)), [rx64]);
+
 // Exercise the decoder that is actually embedded in ground-station.html.
 function extractFunction(source, name) {
   const start = source.indexOf(`function ${name}(`);
@@ -187,6 +265,11 @@ assert.match(html, /overscroll-behavior: contain/);
 assert.match(html, /className = "bottom-resizer"/);
 assert.match(html, /bottomPanelWidths/);
 assert.match(html, /Waiting for RSSI data/);
+assert.match(html, /DEMO_TELEMETRY_ENABLED/);
+assert.match(html, /startDemoTelemetry\(\)/);
+assert.match(html, /id="xbee-mode-select"/);
+assert.match(html, /API \(AP=1 \/ Real RSSI\)/);
+assert.match(html, /handleXbeeApiSerialBytes/);
 assert.match(html, /\.image-receive-body[\s\S]*grid-template-rows: auto minmax\(240px, 1fr\)/);
 assert.match(html, /\.image-receive-body[\s\S]*overscroll-behavior: contain/);
 assert.match(html, /historyBounded/);
@@ -282,5 +365,42 @@ assert.equal(displayedTextTelemetry.magY, -4);
 textDecoderContext.input = "TEMP=broken,UNKNOWN=12";
 assert.equal(vm.runInContext("updateTelemetryDisplayFromBackendText(input)", textDecoderContext), false);
 assert.equal(displayedTextTelemetry.temperatureC, 23.4);
+
+// RSSI must survive arbitrary Web Serial chunk boundaries. The production
+// handler buffers until LF before calling the production RSSI parser.
+const displayedRssi = [];
+const serialContext = {
+  serialTextBuffer: "",
+  USE_SIMULATED_RSSI: false,
+  TextEncoder,
+  isTelemetryDisplayAllowed: () => true,
+  updateRssiDisplay: value => displayedRssi.push(value),
+  feedHexTextPacketStream: () => {},
+  updateRawSerialHexDisplay: () => {},
+  bytesToHex: () => "",
+  updateTelemetryDisplayFromBackendText: () => true,
+  updateCommandAckLog: () => {},
+  incrementRxCommandCount: () => {},
+};
+vm.createContext(serialContext);
+vm.runInContext([
+  extractFunction(html, "normalizeRssiDbm"),
+  extractFunction(html, "updateRssiFromReceivedText"),
+  extractFunction(html, "handleReceivedSerialText"),
+].join("\n"), serialContext);
+
+const demoLines = createDemoTelemetryLines(0);
+assert.match(demoLines[0], /^RSSI=-\d+,TEMP=/);
+serialContext.chunk = demoLines[0].slice(0, 4);
+vm.runInContext("handleReceivedSerialText(chunk)", serialContext);
+assert.deepEqual(displayedRssi, []);
+serialContext.chunk = demoLines[0].slice(4);
+vm.runInContext("handleReceivedSerialText(chunk)", serialContext);
+assert.equal(displayedRssi.length, 1);
+assert.equal(displayedRssi[0], -68);
+
+serialContext.chunk = "DB=40\r\n";
+vm.runInContext("handleReceivedSerialText(chunk)", serialContext);
+assert.equal(displayedRssi.at(-1), -64);
 
 console.log("HEPTA-SAT telemetry/image protocol tests passed");

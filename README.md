@@ -20,6 +20,7 @@ https://hepta-sat-training.github.io/Lab8-02_Ground_Station_Simulator/
 - `index.html`: Application entry point
 - `styles.css`: Application shell styles
 - `public/ground-station.html`: Ground station interface
+- `public/xbee-api.js`: XBee API mode frame/RSSI adapter
 - `public/hepta-image-receiver.js`: telemetry/image stream adapter
 - `public/vendor/hepta-serial-monitor`: pinned HEPTA-SAT Serial Monitor submodule
 - `tests/verify-protocol.mjs`: fragmented serial/image protocol mock test
@@ -57,6 +58,55 @@ python3 -m http.server 8080
 ```
 
 Open `http://localhost:8080/` in Chrome or Edge. Web Serial requires a secure context, such as HTTPS or localhost, and a compatible browser.
+
+### Measure the real HEPTA-to-GS RSSI
+
+No HEPTA sketch change is required. RSSI is measured by the receiving GS XBee,
+so only the **GS-side XBee UART mode** and the browser selection need to change.
+The HEPTA-side XBee can remain in Transparent mode (`AP=0`). Digi documents
+that API and Transparent modules remain compatible over RF because only the RF
+payload is transmitted over the air.
+
+1. Connect only the GS XBee to XCTU / XBee Studio.
+2. Keep the UART baud rate at `38400` (`BD=5`).
+3. Set `AP=1` (API mode without escaping).
+4. For an XBee 3 802.15.4 module, set `AO=2` when that setting is available.
+   This selects legacy receive frames `0x80/0x81`, which contain the per-packet
+   RSSI directly. Older 802.15.4 modules already use these frame types.
+5. Write the settings to the GS XBee and close XCTU so it releases the serial
+   port.
+6. Open the Grand Station page, select
+   **XBee: API (AP=1 / Real RSSI)**, select the GS XBee port, then connect.
+7. Leave the HEPTA powered and transmitting HK. The RSSI value and graph update
+   from each received RF packet. Wait for one telemetry packet before sending
+   `a`, `b`, or `p`, because the page learns the HEPTA address from that packet.
+
+The receiver supports `0x80` and `0x81` frames with inline RSSI. It also accepts
+newer `0x90` and `0x91` receive frames; because those do not carry RSSI, the
+page automatically sends a local `ATDB` API request and displays the returned
+last-packet value. `AP=2` escaped API mode is intentionally not supported.
+
+To use the original Serial Monitor/transparent workflow again, restore the GS
+XBee to `AP=0` and select **Transparent (AP=0)** in the page.
+
+### Hardware-free telemetry / RSSI check
+
+Append `?demo=1` to the page URL to feed deterministic dummy telemetry into
+the production text receiver without opening a serial port:
+
+```text
+http://localhost:8080/?demo=1
+```
+
+The demo sends Lab5-compatible HK and nine-axis records once per second. Each
+HK record starts with a changing value such as `RSSI=-68`. It deliberately
+splits the `RSSI` token across two receiver chunks, so a visible RSSI value and
+graph verify both parsing and arbitrary Web Serial chunk buffering.
+
+This is a UI/protocol test only. An XBee in AT/transparent mode does not stream
+its measured RSSI automatically. Use the API-mode procedure above for the real
+HEPTA-to-GS RSSI. Text sources containing `RSSI=-64`, `DB=40`, or backend JSON
+with an `rssi` value remain supported for compatibility.
 
 ## HEPTA-SAT XBee, telemetry, and Lab compatibility
 
@@ -98,9 +148,11 @@ conversions remain unchanged: bus voltage ADC count
 (`V / (3.3 * 1.431) * 4096`), temperature (`degC * 10`), acceleration
 (`m/s2 / 9.8 * 512`), gyro (`deg/s * 2048 / 125`), and integer magnetometer µT.
 
-Commands `a`, `b`, and `p` are restricted to one character and are sent as
-plain bytes with no line ending, matching HEPTA-SAT Serial Monitor and the Lab
-sketches. `a` selects Mission, `b` selects Standby, and `p` starts the Lab5-05
+Commands `a`, `b`, and `p` are restricted to one character. In Transparent
+mode they are sent as plain bytes with no line ending, matching HEPTA-SAT
+Serial Monitor and the Lab sketches. In API mode the same one-byte payload is
+wrapped in a transmit request addressed to the source of the latest received
+packet. `a` selects Mission, `b` selects Standby, and `p` starts the Lab5-05
 JPEG protocol:
 
 ```text
