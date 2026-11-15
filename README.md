@@ -9,7 +9,9 @@ https://hepta-sat-training.github.io/Lab8-02_Ground_Station_Simulator/
 ## Features
 
 - Real-time ground station dashboard
+- Reserved-pass HK/photo observation follows the selected pass's AOS/LOS and 5° mask; ground-receiver RSSI remains independent on wall-clock time
 - Satellite orbit and ground-track visualization
+- Skyview plot with azimuth around the rim, elevation from 0° at the rim to 90° at the center, and AOS/LOS times in JST
 - Telemetry reception, decoding, and display
 - HEPTA-SAT V4.1.1 EPS and nine-axis history graphs
 - JPEG reception with packet/image CRC validation and one-packet parity recovery
@@ -21,9 +23,14 @@ https://hepta-sat-training.github.io/Lab8-02_Ground_Station_Simulator/
 - `styles.css`: Application shell styles
 - `public/ground-station.html`: Ground station interface
 - `public/xbee-api.js`: XBee API mode frame/RSSI adapter
+- `public/xbee-transparent.js`: AP=0 local-AT RSSI session and serialized payload writer
 - `public/hepta-image-receiver.js`: telemetry/image stream adapter
 - `public/vendor/hepta-serial-monitor`: pinned HEPTA-SAT Serial Monitor submodule
 - `tests/verify-protocol.mjs`: fragmented serial/image protocol mock test
+- `tests/verify-skyview.mjs`: skyview projection, horizon, pass-event, and JST tests
+- `tests/verify-transparent-rssi.mjs`: AP=0 guard times, fragmented replies, telemetry preservation, writer queue, recovery and disconnect tests
+- `tests/verify-pass-window.mjs`: reservation/time/mask boundaries, pass-switch clearing, stream isolation and mode labels
+- `tests/verify-receiver-data.mjs`: independent receiver RSSI, English-only compact UI, binary HK scale profiles and zero-input warning
 - `public/`: Maps, orbit libraries, and Three.js assets
 - `.github/workflows/pages.yml`: GitHub Pages deployment workflow
 
@@ -59,13 +66,101 @@ python3 -m http.server 8080
 
 Open `http://localhost:8080/` in Chrome or Edge. Web Serial requires a secure context, such as HTTPS or localhost, and a compatible browser.
 
+### Read the Skyview Plot
+
+Calculate an orbit and select a pass. The red track shows its predicted path
+across the local sky, not its distance from the ground station. North is 0°,
+east 90°, south 180°, and west 270°. Elevation is 0° at the outer circle, 30°
+and 60° on the inner rings, and 90° (zenith) at the center. The blue dot is the
+satellite at the displayed simulation time; it is hidden below the horizon.
+
+AOS and LOS markers and their JST times use the existing 5° elevation mask,
+shown as a dashed ring. The path between the 0° horizon and the 5° mask is
+muted. No below-horizon path or artificial line from the plot center is drawn.
+The elevation-versus-time graph remains available below the skyview plot.
+
+Run the protocol, skyview, transparent-RSSI, and reserved-pass checks with `npm test`.
+
+### Lab8: reserve a pass before observing telemetry
+
+1. Connect the receiver in **Basic mode (AP=0)** for the standard Lab8 exercise.
+2. Calculate the orbit and reserve/select a pass above. The current workflow
+   selects the first pass initially; select another table row to change it.
+3. The orbit display starts ten seconds before that pass's AOS. The same
+   **simulation clock**, not the PC wall clock, controls the lower observations.
+4. HK telemetry values, received logs, HK histories and photos are visible only
+   during the selected AOS-inclusive/LOS-exclusive interval, while the satellite
+   is at or above the existing 5° elevation mask and a receiver is connected.
+5. Before AOS, after LOS, with no reserved pass, or on a disconnect, the lower
+   observations show waiting/closed status. Out-of-window bytes are discarded,
+   not replayed later. Switching passes/TLEs clears previous observations and
+   partial text, binary and photo buffers so two passes cannot be mixed.
+
+The serial connection itself stays open: this is a GS training/observation
+gate, not a change to HEPTA firmware or a physical RF cutoff. Ground-receiver
+RSSI is not HK: it is read and displayed without a pass, uses wall-clock history,
+and is not cleared or shifted when a pass/TLE changes or LOS is reached.
+The separate command log is also retained when an observation window ends.
+
+The second serial option is **Extension mode (AP=1)**, an optional extension entry
+for learners who have completed Lab8. It retains the existing XBee API frame,
+address and status/AT-response handling; it is not presented as an RSSI-only
+mode. This naming change does not add a multi-node management interface.
+The receiver's actual AP setting must still match the selected option.
+
 ### Measure the real HEPTA-to-GS RSSI
 
-No HEPTA sketch change is required. RSSI is measured by the receiving GS XBee,
-so only the **GS-side XBee UART mode** and the browser selection need to change.
-The HEPTA-side XBee can remain in Transparent mode (`AP=0`). Digi documents
-that API and Transparent modules remain compatible over RF because only the RF
-payload is transmitted over the air.
+No HEPTA sketch change is required. RSSI is measured by the receiving GS XBee.
+Both AP=0 and AP=1 are supported; match the browser selection to the GS radio's
+actual setting. The HEPTA-side XBee can remain in Transparent mode (`AP=0`).
+
+#### Keep the GS XBee in Transparent mode (AP=0)
+
+1. Keep both radios in AP=0 and their local UART connections at 38400 bps.
+2. On the GS radio, use the usual `CC=2B` (`+`) and `GT=3E8` (one second)
+   settings. The page does not change these or write any radio configuration.
+3. Select **Basic mode (AP=0)** in the page and connect the **receiving XBee's
+   USB adapter**, not the OBC's native USB port.
+4. RSSI acquisition runs automatically in the background after radio data
+   arrives, even without a reserved pass, at roughly 15-second intervals.
+   The panel contains only the value, unit and wall-clock graph, with no Auto
+   checkbox or Read button. Hover over the value for the latest read/error status.
+5. The page reserves the writer, observes guard silence, sends `+++` without
+   a newline, and waits for the local `OK` before sending any AT command.
+   It reads back `AP` and `CT`, queries `ATDB`, then exits with `ATCN`.
+   Hexadecimal `40` is displayed as -64 dBm; `DB=0` is not a 0 dBm sample.
+
+Local AT replies are separated from the received telemetry. Known HEPTA binary
+frames are passed intact even when their payload contains `OK\r` or `40\r`.
+Ordinary serial commands share the query's writer queue, so `a`, `b`, and `p`
+are not written into local AT mode. Pending/active photo transfers defer new
+queries. Raspberry Pi/Pico native USB ports (VID 2E8A) are excluded from AT
+probing because a direct OBC USB connection has no receiving-radio RSSI.
+Pass selection does not start, stop or reset RSSI acquisition. DB reports the
+radio's last received RF packet/APS acknowledgement, not a simulated strength.
+
+Command mode **briefly interrupts normal UART forwarding**. This is a sampled
+last-reception value, not a per-telemetry-packet measurement. Continuous traffic
+can exceed the radio's own buffers during a query; browser buffering cannot
+recover RF/serial data already lost inside the radio. Use API mode for large
+or uninterrupted transfers. The implementation targets the documented S2C
+Zigbee defaults; unknown binary protocols/custom CC or GT are not guaranteed.
+
+On a failed query the value's hover status explains the failure and automatic
+probing pauses. Check baud rate/CC/GT and reconnect to retry.
+If AT mode's exit is unconfirmed, outgoing commands are held until its CT
+timeout expires. A confirmed CT value is used; otherwise the S2C Zigbee maximum
+is used conservatively (up to about 67 seconds including the guard margin). Disconnect cancels scheduled work
+and attempts `ATCN` only for a confirmed AT session. An immediate reconnect to
+the same port retains an outstanding recovery deadline.
+
+See [Digi's S2C Zigbee user guide](https://docs.digi.com/resources/documentation/digidocs/pdfs/90002002.pdf)
+for command-mode guard times, CT/CN, and the DB last-hop measurement semantics.
+
+#### Extension mode (AP=1)
+
+Digi documents that API and Transparent modules remain compatible over RF
+because only the RF payload is transmitted over the air.
 
 1. Connect only the GS XBee to XCTU / XBee Studio.
 2. Keep the UART baud rate at `38400` (`BD=5`).
@@ -76,9 +171,9 @@ payload is transmitted over the air.
 5. Write the settings to the GS XBee and close XCTU so it releases the serial
    port.
 6. Open the Grand Station page, select
-   **XBee: API (AP=1 / Real RSSI)**, select the GS XBee port, then connect.
-7. Leave the HEPTA powered and transmitting HK. The RSSI value and graph update
-   from each received RF packet. Wait for one telemetry packet before sending
+   **XBee: Extension mode (AP=1)**, select the GS XBee port, then connect.
+7. Leave the HEPTA powered and transmitting. RSSI updates from received RF
+   packets regardless of the reserved HK window. Wait for one radio packet before sending
    `a`, `b`, or `p`, because the page learns the HEPTA address from that packet.
 
 The receiver supports `0x80` and `0x81` frames with inline RSSI. It also accepts
@@ -87,7 +182,7 @@ page automatically sends a local `ATDB` API request and displays the returned
 last-packet value. `AP=2` escaped API mode is intentionally not supported.
 
 To use the original Serial Monitor/transparent workflow again, restore the GS
-XBee to `AP=0` and select **Transparent (AP=0)** in the page.
+XBee to `AP=0` and select **Basic mode (AP=0)** in the page.
 
 ### Hardware-free telemetry / RSSI check
 
@@ -98,14 +193,17 @@ the production text receiver without opening a serial port:
 http://localhost:8080/?demo=1
 ```
 
-The demo sends Lab5-compatible HK and nine-axis records once per second. Each
+The demo sends Lab5-compatible HK and nine-axis records once per second.
+Calculate/select a pass for HK observations; the demonstration RSSI remains
+independent just like the hardware receiver RSSI. Each
 HK record starts with a changing value such as `RSSI=-68`. It deliberately
 splits the `RSSI` token across two receiver chunks, so a visible RSSI value and
 graph verify both parsing and arbitrary Web Serial chunk buffering.
 
 This is a UI/protocol test only. An XBee in AT/transparent mode does not stream
-its measured RSSI automatically. Use the API-mode procedure above for the real
-HEPTA-to-GS RSSI. Text sources containing `RSSI=-64`, `DB=40`, or backend JSON
+its measured RSSI automatically; the new AP=0 session queries it locally.
+Use either of the real-radio procedures above for the HEPTA-to-GS RSSI.
+Text sources containing `RSSI=-64`, `DB=40`, or backend JSON
 with an `rssi` value remain supported for compatibility.
 
 ## HEPTA-SAT XBee, telemetry, and Lab compatibility
@@ -114,8 +212,8 @@ Web Serial opens the XBee adapter at **38400 baud**, matching the existing
 HEPTA-SAT training XBee pair. The current Flight Software sends the same
 CRLF-terminated text records as the Lab repositories. The receiver buffers
 arbitrary Web Serial chunks until LF, matching HEPTA-SAT Serial Monitor.
-Received hardware telemetry is displayed during bench tests regardless of the
-simulated satellite elevation.
+HK observations are filtered by the selected pass window even during bench
+tests; radio reception and ground RSSI acquisition remain independent.
 
 The exact Lab5-03 HK record is:
 
@@ -142,11 +240,26 @@ frame decoder remains available. It accepts the following payload lengths:
 - 23 bytes: legacy bus voltage, temperature, and nine-axis data
 - 35 bytes: the same 23-byte prefix plus Lab5-03 EPS data
 
-The 35-byte payload appends unsigned-millivolt `V5`, `V3V3`, and `SAP`, then
-signed-milliamp `ISOL`, `IBUS`, and `ICHG` fields. Existing offsets and value
-conversions remain unchanged: bus voltage ADC count
+Choose **Display Features → Binary HK format** to match the transmitting
+firmware. The default **Flightware physical units** matches the supplied
+`HEPTA_Flightware.ino`: bus voltage in mV, temperature in 0.1°C, acceleration
+in 0.01 m/s², angular rate in 0.1 deg/s, and magnetometer in 0.1 µT.
+**Course ADC format** preserves the original conversion: bus voltage ADC count
 (`V / (3.3 * 1.431) * 4096`), temperature (`degC * 10`), acceleration
 (`m/s2 / 9.8 * 512`), gyro (`deg/s * 2048 / 125`), and integer magnetometer µT.
+The two schemas cannot be safely guessed from a 23-byte payload's size or
+magnitude. Changing the format clears old HK values/history without clearing
+RSSI or interrupting an image transfer. Text HK is already in physical units.
+
+The 35-byte payload appends unsigned-millivolt `V5`, `V3V3`, and `SAP`, then
+signed-milliamp `ISOL`, `IBUS`, and `ICHG` in either profile.
+
+The supplied Flightware temperature formula returns approximately 125.6°C for
+ADC=0. A 0 V / 125.6°C report is therefore marked with a zero-input warning
+(hover the values); it is not silently converted to room temperature. With
+only an OBC and XBee, missing EPS/sensor inputs cannot supply valid satellite
+measurements. This warning is a diagnostic indication, not proof of a specific
+hardware fault. The GS does not replace missing measurements with dummy values.
 
 Commands `a`, `b`, and `p` are restricted to one character. In Transparent
 mode they are sent as plain bytes with no line ending, matching HEPTA-SAT

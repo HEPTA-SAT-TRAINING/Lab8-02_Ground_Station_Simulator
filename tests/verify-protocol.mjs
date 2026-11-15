@@ -268,7 +268,8 @@ assert.match(html, /Waiting for RSSI data/);
 assert.match(html, /DEMO_TELEMETRY_ENABLED/);
 assert.match(html, /startDemoTelemetry\(\)/);
 assert.match(html, /id="xbee-mode-select"/);
-assert.match(html, /API \(AP=1 \/ Real RSSI\)/);
+assert.match(html, /Extension mode \(AP=1\)/);
+assert.match(html, /Basic mode \(AP=0\)/);
 assert.match(html, /handleXbeeApiSerialBytes/);
 assert.match(html, /\.image-receive-body[\s\S]*grid-template-rows: auto minmax\(240px, 1fr\)/);
 assert.match(html, /\.image-receive-body[\s\S]*overscroll-behavior: contain/);
@@ -281,7 +282,7 @@ assert.match(html, /\.app\s*\{[\s\S]*width: 100%/);
 assert.match(html, /\.top-area > \*,[\s\S]*\.bottom-area > \*\s*\{[\s\S]*min-width: 0/);
 assert.match(html, /function normalizeBottomWidths/);
 assert.match(html, /command-log-command[\s\S]*min-width: 0/);
-assert.match(html, /grid-template-rows: repeat\(2, minmax\(280px, 1fr\)\)/);
+assert.match(html, /grid-template-rows: minmax\(360px, 1fr\) minmax\(280px, 1fr\)/);
 assert.match(html, /\.mini-graph-canvas-wrap[\s\S]*min-height: 250px/);
 
 // The command UI must accept the three single-byte Lab commands, including p.
@@ -371,9 +372,11 @@ assert.equal(displayedTextTelemetry.temperatureC, 23.4);
 const displayedRssi = [];
 const serialContext = {
   serialTextBuffer: "",
+  rssiSerialTextBuffer: "",
   USE_SIMULATED_RSSI: false,
   TextEncoder,
   isTelemetryDisplayAllowed: () => true,
+  updateTelemetryReceiveGate: () => true,
   updateRssiDisplay: value => displayedRssi.push(value),
   feedHexTextPacketStream: () => {},
   updateRawSerialHexDisplay: () => {},
@@ -386,6 +389,7 @@ vm.createContext(serialContext);
 vm.runInContext([
   extractFunction(html, "normalizeRssiDbm"),
   extractFunction(html, "updateRssiFromReceivedText"),
+  extractFunction(html, "handleReceiverRssiText"),
   extractFunction(html, "handleReceivedSerialText"),
 ].join("\n"), serialContext);
 
