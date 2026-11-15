@@ -9,7 +9,7 @@ https://hepta-sat-training.github.io/Lab8-02_Ground_Station_Simulator/
 ## Features
 
 - Real-time ground station dashboard
-- Reserved-pass HK/photo observation follows the selected pass's AOS/LOS and 5° mask; ground-receiver RSSI remains independent on wall-clock time
+- Reserved-pass HK observation follows the selected pass's AOS/LOS and 5° mask; ground-receiver RSSI and photo reception remain independent
 - Satellite orbit and ground-track visualization
 - Skyview plot with azimuth around the rim, elevation from 0° at the rim to 90° at the center, and AOS/LOS times in JST
 - Telemetry reception, decoding, and display
@@ -88,19 +88,22 @@ Run the protocol, skyview, transparent-RSSI, and reserved-pass checks with `npm 
    selects the first pass initially; select another table row to change it.
 3. The orbit display starts ten seconds before that pass's AOS. The same
    **simulation clock**, not the PC wall clock, controls the lower observations.
-4. HK telemetry values, received logs, HK histories and photos are visible only
+4. HK telemetry values, received logs and HK histories are visible only
    during the selected AOS-inclusive/LOS-exclusive interval, while the satellite
    is at or above the existing 5° elevation mask and a receiver is connected.
 5. Before AOS, after LOS, with no reserved pass, or on a disconnect, the lower
    observations show waiting/closed status. Out-of-window bytes are discarded,
    not replayed later. Switching passes/TLEs clears previous observations and
-   partial text, binary and photo buffers so two passes cannot be mixed.
+   partial HK text/binary buffers so two passes cannot be mixed.
 
 The serial connection itself stays open: this is a GS training/observation
 gate, not a change to HEPTA firmware or a physical RF cutoff. Ground-receiver
 RSSI is not HK: it is read and displayed without a pass, uses wall-clock history,
 and is not cleared or shifted when a pass/TLE changes or LOS is reached.
 The separate command log is also retained when an observation window ends.
+Photo framing is demultiplexed before the HK gate. `IMG_BEGIN` and image
+packets continue through AOS/LOS and pass/TLE changes; these events do not
+reset an image in progress or hide the last completed photo.
 
 The second serial option is **Extension mode (AP=1)**, an optional extension entry
 for learners who have completed Lab8. It retains the existing XBee API frame,
@@ -125,6 +128,9 @@ actual setting. The HEPTA-side XBee can remain in Transparent mode (`AP=0`).
    arrives, even without a reserved pass, at roughly 15-second intervals.
    The panel contains only the value, unit and wall-clock graph, with no Auto
    checkbox or Read button. Hover over the value for the latest read/error status.
+   The first sample starts at the left edge of a three-minute time axis; newer
+   samples advance right. Once that interval is full, the graph scrolls to keep
+   the latest three minutes. The horizontal axis is labeled Time (JST).
 5. The page reserves the writer, observes guard silence, sends `+++` without
    a newline, and waits for the local `OK` before sending any AT command.
    It reads back `AP` and `CT`, queries `ATDB`, then exits with `ATCN`.
@@ -240,19 +246,15 @@ frame decoder remains available. It accepts the following payload lengths:
 - 23 bytes: legacy bus voltage, temperature, and nine-axis data
 - 35 bytes: the same 23-byte prefix plus Lab5-03 EPS data
 
-Choose **Display Features → Binary HK format** to match the transmitting
-firmware. The default **Flightware physical units** matches the supplied
+The dashboard uses one fixed binary HK format matching the supplied
 `HEPTA_Flightware.ino`: bus voltage in mV, temperature in 0.1°C, acceleration
 in 0.01 m/s², angular rate in 0.1 deg/s, and magnetometer in 0.1 µT.
-**Course ADC format** preserves the original conversion: bus voltage ADC count
-(`V / (3.3 * 1.431) * 4096`), temperature (`degC * 10`), acceleration
-(`m/s2 / 9.8 * 512`), gyro (`deg/s * 2048 / 125`), and integer magnetometer µT.
-The two schemas cannot be safely guessed from a 23-byte payload's size or
-magnitude. Changing the format clears old HK values/history without clearing
-RSSI or interrupting an image transfer. Text HK is already in physical units.
+There is no format selector in the interface. Text HK is already in physical
+units. A transmitter using older ADC/count scaling must be aligned with this
+schema rather than being guessed from packet size or value magnitude.
 
 The 35-byte payload appends unsigned-millivolt `V5`, `V3V3`, and `SAP`, then
-signed-milliamp `ISOL`, `IBUS`, and `ICHG` in either profile.
+signed-milliamp `ISOL`, `IBUS`, and `ICHG`.
 
 The supplied Flightware temperature formula returns approximately 125.6°C for
 ADC=0. A 0 V / 125.6°C report is therefore marked with a zero-input warning
@@ -306,6 +308,9 @@ state. Once the Serial Monitor `START` packet is received it switches to a
 byte-based progress bar (`received bytes / image bytes`) and packet count. A
 capture or transfer error is reported in the same panel instead of leaving a
 permanent `WAIT` state.
+If no `IMG_BEGIN` arrives within 60 seconds, the capture indicator stops with
+a timeout message. This does not imply camera success or fabricate a photo.
+An empty preview stays hidden instead of showing a broken-image placeholder.
 
 ## Verification
 

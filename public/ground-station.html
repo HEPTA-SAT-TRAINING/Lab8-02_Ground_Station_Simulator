@@ -177,23 +177,6 @@
       letter-spacing: 0.06em;
     }
 
-    .hk-format-setting {
-      display: grid;
-      gap: 4px;
-      margin-top: 8px;
-      font-size: 11px;
-    }
-
-    .hk-format-setting select {
-      width: 100%;
-      min-width: 0;
-      padding: 4px;
-      color: #073474;
-      background: #ffffff;
-      border: 1px solid #b8c6d8;
-      border-radius: 4px;
-    }
-
     .tm-value-main.sensor-input-warning {
       color: #a13c20;
     }
@@ -1782,6 +1765,10 @@
       object-fit: contain;
     }
 
+    .image-receive-preview img[hidden] {
+      display: none;
+    }
+
     .image-download-link[hidden] {
       display: none;
     }
@@ -2444,13 +2431,6 @@
         <div class="panel-selector-menu" id="panel-selector-menu" hidden>
           <div class="selector-menu-heading">Panels to display</div>
           <div id="panel-selector-options"></div>
-          <label class="hk-format-setting" title="Select the format used by the transmitting Flightware. This affects binary HK units, not radio AP mode.">
-            Binary HK format
-            <select id="hk-format-select">
-              <option value="flightware-physical">Flightware physical units</option>
-              <option value="course-adc">Course ADC format</option>
-            </select>
-          </label>
         </div>
         <span class="simulation-time-value" id="simulation-time-value">--:--:--</span>
       </div>
@@ -3051,18 +3031,6 @@
     const panelSelectorTrigger = document.getElementById("panel-selector-trigger");
     const panelSelectorMenu = document.getElementById("panel-selector-menu");
     const panelSelectorOptions = document.getElementById("panel-selector-options");
-    const hkFormatSelect = document.getElementById("hk-format-select");
-
-    function getSelectedHkEncoding() {
-      return hkFormatSelect?.value || "flightware-physical";
-    }
-
-    hkFormatSelect?.addEventListener("change", () => {
-      // Discard observations decoded under the previous binary schema.
-      // Do not interrupt an unrelated JPEG transfer or clear receiver RSSI.
-      clearTelemetryReceiveDisplays(false);
-      updateTelemetryReceiveGate();
-    });
     const graphSelectorTrigger = document.getElementById("graph-selector-trigger");
     const graphSelectorMenu = document.getElementById("graph-selector-menu");
     const graphSelectorOptions = document.getElementById("graph-selector-options");
@@ -3285,6 +3253,7 @@
     let rssiSerialTextBuffer = "";
     let commandAckByteTextBuffer = "";
     let rssiHistory = [];
+    let rssiGraphStartMs = null;
     let simulatedRssiTimer = null;
     let simulatedRssiDbm = -64;
     let demoTelemetryActive = false;
@@ -3337,6 +3306,7 @@
 
     const imageStreamCallbacks = {
       onTelemetryBytes(bytes) {
+        if (replayingImageReceiverBacklog) return;
         handleReceivedSerialBytes(bytes);
         handleReceivedSerialText(telemetryTextDecoder.decode(bytes, { stream: true }));
       },
@@ -3397,6 +3367,7 @@
       }
     };
     let imageStreamReceiver = null;
+    let replayingImageReceiverBacklog = false;
     let pendingImageReceiverChunks = [];
     let pendingImageReceiverBytes = 0;
     const MAX_PENDING_IMAGE_RECEIVER_BYTES = 1024 * 1024;
@@ -3404,8 +3375,13 @@
     import("./hepta-image-receiver.js")
       .then(({ StreamReceiver }) => {
         imageStreamReceiver = new StreamReceiver(imageStreamCallbacks);
-        if (updateTelemetryReceiveGate()) {
+        // Keep photo framing continuous even if the HK pass window changes.
+        // Queued startup HK is old data, so do not replay it into observations.
+        replayingImageReceiverBacklog = true;
+        try {
           for (const bytes of pendingImageReceiverChunks) imageStreamReceiver.push(bytes);
+        } finally {
+          replayingImageReceiverBacklog = false;
         }
         pendingImageReceiverChunks = [];
         pendingImageReceiverBytes = 0;
@@ -3413,10 +3389,6 @@
       .catch(error => {
         console.error("Could not load the image reception module", error);
         setImageStatus("Could not load photo reception", true);
-        for (const bytes of pendingImageReceiverChunks) {
-          handleReceivedSerialBytes(bytes);
-          handleReceivedSerialText(telemetryTextDecoder.decode(bytes, { stream: true }));
-        }
         pendingImageReceiverChunks = [];
         pendingImageReceiverBytes = 0;
       });
@@ -3521,15 +3493,15 @@
       }
     }
 
-    function decodeHkPayload(payload, packetType = TELEMETRY_PACKET.typeHk, encoding = "course-adc") {
-      // Both schemas use the same packet layout, but different physical scales.
-      // Select explicitly; values/length cannot reliably identify the schema.
+    function decodeHkPayload(payload, packetType = TELEMETRY_PACKET.typeHk, encoding = "flightware-physical") {
+      // Default to the supplied Flightware's physical units. The optional
+      // legacy argument remains for decoder compatibility, not as a UI option.
       // Payload[0]    : operations mode 0x00=Standby, 0x01=Mission
-      // Payload[1-2]  : voltage ADC count, uint16, big-endian
+      // Payload[1-2]  : bus voltage mV, uint16, big-endian
       // Payload[3-4]  : temperature 0.1 degC, int16, big-endian e.g. 23.2 degC = 232 = 0x00E8
-      // Payload[5-10] : acceleration XYZ 512 count/g, int16 x3
-      // Payload[11-16]: angular rate XYZ 2048/125 count/(deg/s), int16 x3
-      // Payload[17-22]: magnetometer XYZ uT integer, int16 x3
+      // Payload[5-10] : acceleration XYZ 0.01 m/s², int16 x3
+      // Payload[11-16]: angular rate XYZ 0.1 deg/s, int16 x3
+      // Payload[17-22]: magnetometer XYZ 0.1 uT, int16 x3
       if (!payload || payload.length < TELEMETRY_PACKET.basicPayloadLength) return null;
       if (encoding !== "course-adc" && encoding !== "flightware-physical") throw new RangeError("Unknown binary HK format");
       const physical = encoding === "flightware-physical";
@@ -3629,7 +3601,7 @@
     function updateDecodedTelemetryDisplay(packet) {
       if (!isTelemetryDisplayAllowed()) return;
       const decoded = packet && packet.checksumOk && isTelemetryPacketType(packet.packetType)
-        ? decodeHkPayload(packet.payload, packet.packetType, getSelectedHkEncoding())
+        ? decodeHkPayload(packet.payload, packet.packetType)
         : null;
 
       if (!decoded) {
@@ -3639,7 +3611,7 @@
       updateTelemetryStatusDisplays(decoded);
 
       setTelemetryText(packetUi.tmVoltageValue, `${decoded.voltageV.toFixed(2)} V`);
-      setTelemetryText(packetUi.tmVoltageRaw, `raw: ${decoded.voltageHex} = ${decoded.voltageRaw} ${getSelectedHkEncoding() === "flightware-physical" ? "mV" : "ADC"}`);
+      setTelemetryText(packetUi.tmVoltageRaw, `raw: ${decoded.voltageHex} = ${decoded.voltageRaw} mV`);
       setTelemetryText(packetUi.tmTempValue, `${decoded.temperatureC.toFixed(1)} °C`);
       setTelemetryText(packetUi.tmTempRaw, `raw: ${decoded.temperatureHex} = ${decoded.temperatureRaw} /10`);
       setTelemetryText(packetUi.tmV5Value, decoded.voltage5V === null ? "-- V" : `${decoded.voltage5V.toFixed(3)} V`);
@@ -3975,7 +3947,7 @@
       return getTelemetryReceiveGateState().allowed;
     }
 
-    function clearTelemetryReceiveDisplays(clearPhotos = true) {
+    function clearTelemetryReceiveDisplays() {
       if (packetUi.tmModeValue) {
         packetUi.tmModeValue.textContent = "--";
         packetUi.tmModeValue.className = "tm-status-main";
@@ -4013,26 +3985,6 @@
       currentTelemetryModeDisplay = { text: "--", className: "" };
       for (const key of ["header", "satId", "type", "seq", "len", "payload", "checksum", "typeLabel", "checkResult", "lastTime"]) {
         setTelemetryText(packetUi[key], "--");
-      }
-
-      // No partial photo or queued pre-window bytes may finish in a later pass.
-      if (clearPhotos) {
-      imageStreamReceiver?.reset();
-      pendingImageReceiverChunks = [];
-      pendingImageReceiverBytes = 0;
-      xbeeImagePendingUntil = 0;
-      clearReceivedImageUrl();
-      if (imageReceivePreview) {
-        imageReceivePreview.hidden = true;
-        imageReceivePreview.removeAttribute("src");
-      }
-      if (imageDownloadLink) imageDownloadLink.hidden = true;
-      if (imageReceiveProgressBar) {
-        imageReceiveProgressBar.hidden = true;
-        imageReceiveProgressBar.value = 0;
-      }
-      if (imageReceiveProgressText) imageReceiveProgressText.textContent = "Waiting for reserved pass";
-      setImageStatus("Photo reception follows the reserved pass window");
       }
 
       if (packetUi.logList) {
@@ -4520,7 +4472,12 @@
 
     function getRssiGraphTimeRange(nowMs = Date.now(), durationMs = 3 * 60 * 1000) {
       // RSSI belongs to the ground receiver, not the selected satellite pass.
-      return { startMs: nowMs - durationMs, endMs: nowMs, durationMs, historyBounded: true };
+      // Start with the first sample at the LEFT edge. Fill toward the right,
+      // and only scroll after the first complete time window has elapsed.
+      const span = Number.isFinite(durationMs) ? Math.max(1, durationMs) : 3 * 60 * 1000;
+      const anchor = Number.isFinite(rssiGraphStartMs) ? Math.min(rssiGraphStartMs, nowMs) : nowMs;
+      const startMs = Math.max(anchor, nowMs - span);
+      return { startMs, endMs: startMs + span, durationMs: span, historyBounded: true };
     }
 
     function drawRssiGraph() {
@@ -4635,6 +4592,8 @@
       ctx.fillText(graphEdgeLabel(axisRange, "start"), leftPad, height - 3);
       ctx.textAlign = "right";
       ctx.fillText(graphEdgeLabel(axisRange, "end"), leftPad + plotW, height - 3);
+      ctx.textAlign = "center";
+      ctx.fillText("Time (JST)", leftPad + plotW / 2, height - 3);
       ctx.restore();
     }
 
@@ -4650,7 +4609,9 @@
       if (rssiValueEl) rssiValueEl.textContent = hasValue ? String(Math.round(rssiDbm)) : "--";
 
       if (hasValue) {
-        rssiHistory.push({ time: Date.now(), rssi: rssiDbm });
+        const time = Date.now();
+        if (!Number.isFinite(rssiGraphStartMs)) rssiGraphStartMs = time;
+        rssiHistory.push({ time, rssi: rssiDbm });
         if (rssiHistory.length > 600) rssiHistory = rssiHistory.slice(-600);
       }
 
@@ -4992,6 +4953,15 @@
         }
       });
       if (changed) renderCommandLog();
+      updatePhotoCaptureTimeout(now);
+    }
+
+    function updatePhotoCaptureTimeout(now = Date.now()) {
+      if (!xbeeImagePendingUntil || now < xbeeImagePendingUntil || imageStreamReceiver?.mode === "image") return;
+      xbeeImagePendingUntil = 0;
+      setImageStatus("Capture timed out: no IMG_BEGIN. Check camera connection and firmware p-command support.", true);
+      if (imageReceiveProgressText) imageReceiveProgressText.textContent = "No photo data received";
+      if (imageReceiveProgressBar) imageReceiveProgressBar.hidden = true;
     }
 
     function markMatchingCommandAck(mode) {
@@ -5208,7 +5178,6 @@
     }
 
     function showPictureCapturePending() {
-      if (!isTelemetryDisplayAllowed()) return;
       xbeeImagePendingUntil = Date.now() + 60000;
       setImageStatus("Capturing: waiting for IMG_BEGIN");
       if (imageReceiveProgressText) imageReceiveProgressText.textContent = "Preparing capture and transfer";
@@ -5294,7 +5263,7 @@
               allocateXbeeApiFrameId(),
             )
           : directCommandBytes;
-        if (packetInfo.command === "p" && isTelemetryDisplayAllowed()) xbeeImagePendingUntil = Date.now() + 60000;
+        if (packetInfo.command === "p") xbeeImagePendingUntil = Date.now() + 60000;
         if (!isXbeeApiMode() && xbeeTransparentSession) {
           await xbeeTransparentSession.writePayload(transmittedBytes);
         } else {
@@ -5466,8 +5435,8 @@
 
     function handleReceivedRadioPayload(value) {
       if (!value || value.length === 0) return;
-      // Drop out-of-window bytes instead of buffering them for the next pass.
-      if (!updateTelemetryReceiveGate()) return;
+      // Demultiplex first. Only HK handlers apply the reservation gate;
+      // otherwise a boundary could drop IMG_BEGIN or truncate a JPEG transfer.
 
       // Demultiplex Lab5-05 image packets before feeding the existing
       // binary/text telemetry parsers. This keeps reception asynchronous and

@@ -22,7 +22,7 @@ function load(context, names) {
 }
 let wallTime = 1000000;
 const receiver = load({
-  Date: { now: () => wallTime }, rssiValueEl: { textContent: "--" }, rssiHistory: [],
+  Date: { now: () => wallTime }, rssiValueEl: { textContent: "--" }, rssiHistory: [], rssiGraphStartMs: null,
   drawRssiGraph: () => {},
   updateTelemetryReceiveGate: () => { throw new Error("Receiver RSSI must not consult the HK pass gate"); },
   getTelemetryHistoryTimeMs: () => { throw new Error("RSSI must not use the orbit simulation clock"); }
@@ -35,10 +35,15 @@ receiver.updateRssiDisplay(-70);
 assert.equal(receiver.rssiHistory.length, 2);
 assert.equal(receiver.rssiHistory[1].time, wallTime);
 const range = receiver.getRssiGraphTimeRange();
-assert.equal(range.endMs, wallTime);
-assert.equal(range.startMs, wallTime - 180000);
+assert.equal(range.startMs, 1000000, "The first sample anchors the left edge");
+assert.equal(range.endMs, 1180000);
+assert.equal((wallTime - range.startMs) / range.durationMs, 2000 / 180000, "New samples advance left to right instead of being pinned to the right");
 assert.equal(range.historyBounded, true);
 assert.equal(range.passBounded, undefined);
+wallTime = 1240000;
+const rolling = receiver.getRssiGraphTimeRange();
+assert.equal(rolling.startMs, wallTime - 180000, "Scroll only after the initial window is full");
+assert.equal(rolling.endMs, wallTime);
 for (const value of [null, undefined, "", "  "]) assert.equal(receiver.normalizeRssiDbm(value), null);
 
 const textValues = [];
@@ -63,11 +68,11 @@ const ui = Object.fromEntries(names.map(name => [name, field()]));
 for (const f of Object.values(ui)) f.classList.owner = f;
 const context = load({
   TELEMETRY_PACKET: { typeHk: 0x10, basicPayloadLength: 5, missionPayloadLength: 23, extendedPayloadLength: 35 },
-  hkFormatSelect: { value: "flightware-physical" }, packetUi: ui,
+  packetUi: ui,
   isTelemetryDisplayAllowed: () => true, isTelemetryPacketType: type => type === 0x10 || type === 0x11,
   updateTelemetryStatusDisplays: () => {}, getTelemetryHistoryTimeMs: () => 123,
   telemetryHistory: [], drawTelemetryGraphs: () => {}
-}, ["byteToHex", "readInt16BE", "decodeMode", "decodePacketTypeMode", "decodeHkPayload", "getSelectedHkEncoding", "setTelemetryText", "applyTelemetryDataWarning", "updateDecodedTelemetryDisplay"]);
+}, ["byteToHex", "readInt16BE", "decodeMode", "decodePacketTypeMode", "decodeHkPayload", "setTelemetryText", "applyTelemetryDataWarning", "updateDecodedTelemetryDisplay"]);
 
 // Exact scales used by the user's supplied HEPTA_Flightware.ino builder.
 const payload = new Uint8Array(23);
@@ -84,7 +89,7 @@ data.setInt16(15, 789);
 data.setInt16(17, 210);
 data.setInt16(19, -400);
 data.setInt16(21, 380);
-const decoded = context.decodeHkPayload(payload, 0x11, "flightware-physical");
+const decoded = context.decodeHkPayload(payload, 0x11);
 assert.equal(decoded.voltageV, 3.78);
 assert.equal(decoded.temperatureC, 23.4);
 assert.equal(decoded.accX, 1.23);
@@ -122,9 +127,28 @@ assert.match(ui.tmTempValue.title, /zero ADC inputs/);
 assert.match(ui.tmTempValue.attributes["aria-label"], /not validated/);
 
 assert.doesNotMatch(html, /id="transparent-rssi-auto"|id="read-rssi-button"/);
+assert.doesNotMatch(html, /id="hk-format-select"|Binary HK format|Flightware physical units|Course ADC format/);
 assert.match(html, /class="visually-hidden" id="rssi-read-status"/);
 assert.doesNotMatch(extract("clearTelemetryReceiveDisplays"), /rssiHistory\s*=|rssiValueEl/);
 assert.doesNotMatch(extract("updateTelemetryReceiveGate"), /rssiReadStatus|seenPayload/);
 assert.doesNotMatch(extract("handleXbeeApiSerialBytes"), /if \(!updateTelemetryReceiveGate\(\)\) continue/);
 assert.doesNotMatch(html, /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u);
+const capture = load({
+  xbeeImagePendingUntil: 5000, imageStreamReceiver: { mode: "telemetry" },
+  imageReceiveProgressText: { textContent: "Preparing capture and transfer" },
+  imageReceiveProgressBar: { hidden: false }, setImageStatus: (message, error) => { capture.message = message; capture.error = error; }
+}, ["updatePhotoCaptureTimeout"]);
+capture.updatePhotoCaptureTimeout(4999);
+assert.equal(capture.xbeeImagePendingUntil, 5000);
+capture.updatePhotoCaptureTimeout(5000);
+assert.equal(capture.xbeeImagePendingUntil, 0);
+assert.equal(capture.imageReceiveProgressBar.hidden, true);
+assert.equal(capture.imageReceiveProgressText.textContent, "No photo data received");
+assert.match(capture.message, /no IMG_BEGIN/);
+assert.equal(capture.error, true);
+capture.xbeeImagePendingUntil = 5000;
+capture.imageStreamReceiver.mode = "image";
+capture.updatePhotoCaptureTimeout(6000);
+assert.equal(capture.xbeeImagePendingUntil, 5000, "Do not replace an active image's own packet timeout");
+assert.match(html, /\.image-receive-preview img\[hidden\]\s*\{\s*display: none/);
 console.log("HEPTA-SAT independent receiver RSSI, compact English UI, Flightware/course scales and zero-input warning tests passed");

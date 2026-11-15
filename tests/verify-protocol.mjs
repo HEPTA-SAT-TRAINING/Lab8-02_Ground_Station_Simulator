@@ -408,3 +408,46 @@ vm.runInContext("handleReceivedSerialText(chunk)", serialContext);
 assert.equal(displayedRssi.at(-1), -64);
 
 console.log("HEPTA-SAT telemetry/image protocol tests passed");
+
+// The radio/image stream must remain continuous across HK pass boundaries.
+// In particular, IMG_BEGIN may be fragmented across AOS and JPEG may end
+// after LOS. Only the telemetry callback is allowed to filter HK records.
+let hkWindowOpen = false;
+let boundaryImage = null;
+const boundaryErrors = [];
+const boundaryTelemetry = [];
+const boundaryReceiver = new StreamReceiver({
+  onTelemetryBytes: bytes => { if (hkWindowOpen) boundaryTelemetry.push(...bytes); },
+  onComplete: result => { boundaryImage = result; },
+  onError: message => boundaryErrors.push(message)
+});
+const routeContext = vm.createContext({
+  imageStreamReceiver: boundaryReceiver,
+  updateTelemetryReceiveGate: () => { throw new Error("Do not gate the raw photo stream"); }
+});
+vm.runInContext(extractFunction(html, "handleReceivedRadioPayload"), routeContext);
+routeContext.handleReceivedRadioPayload(telemetryBefore);
+routeContext.handleReceivedRadioPayload(new TextEncoder().encode("IMG_BE"));
+hkWindowOpen = true;
+routeContext.handleReceivedRadioPayload(concat(
+  new TextEncoder().encode("GIN\n"),
+  packet(PACKET_TYPE_START, 0, total, startPayload),
+  packet(PACKET_TYPE_DATA, 1, total, data1)
+));
+assert.equal(boundaryReceiver.mode, "image");
+hkWindowOpen = false;
+routeContext.handleReceivedRadioPayload(concat(
+  packet(PACKET_TYPE_PARITY, dataCount + 1, total, parity),
+  packet(PACKET_TYPE_END, total - 1, total),
+  new TextEncoder().encode("\nIMG_END\n"), telemetryAfter
+));
+assert.deepEqual(boundaryErrors, []);
+assert.ok(boundaryImage, "Photo must complete after the HK window closes");
+assert.deepEqual(boundaryImage.image, image);
+assert.equal(boundaryImage.recoveredSequence, 2);
+assert.equal(boundaryTelemetry.length, 0, "Out-of-window HK stays filtered");
+hkWindowOpen = true;
+routeContext.handleReceivedRadioPayload(telemetryAfter);
+assert.ok(boundaryTelemetry.length >= telemetryAfter.length);
+boundaryReceiver.reset();
+console.log("HEPTA-SAT photo framing across AOS/LOS passed");

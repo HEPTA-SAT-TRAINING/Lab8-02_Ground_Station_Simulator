@@ -109,16 +109,17 @@ const clear = load({
   drawTelemetryGraphs: () => {}, drawRssiGraph: () => {},
 }, ["setTelemetryText", "clearTelemetryReceiveDisplays"]);
 clear.clearTelemetryReceiveDisplays();
-for (const key of ["telemetryHistory", "packetLogHistory", "packetByteBuffer", "pendingImageReceiverChunks"]) assert.equal(clear[key].length, 0);
+for (const key of ["telemetryHistory", "packetLogHistory", "packetByteBuffer"]) assert.equal(clear[key].length, 0);
+assert.equal(clear.pendingImageReceiverChunks.length, 1, "Pass changes must not drop queued photo bytes");
 assert.equal(clear.rssiHistory.length, 1, "Closing an HK window must not clear ground-receiver RSSI");
 for (const key of ["serialTextBuffer", "serialHexTextBuffer", "commandAckByteTextBuffer"]) assert.equal(clear[key], "");
 assert.equal(fields.tmModeValue.textContent, "--");
 assert.equal(fields.tmVoltageValue.textContent, "-- V");
 assert.equal(fields.lastTime.textContent, "--");
 assert.equal(clear.backendTelemetryState.temperatureC, null);
-assert.equal(clear.imageReceivePreview.hidden, true);
-assert.equal(clear.imageDownloadLink.hidden, true);
-assert.equal(imageResets, 1);
+assert.equal(clear.imageReceivePreview.hidden, false, "Keep the last received photo visible");
+assert.equal(clear.imageDownloadLink.hidden, false);
+assert.equal(imageResets, 0, "Closing an HK window must not reset photo reception");
 
 let allowed = false;
 const textRows = [];
@@ -175,10 +176,10 @@ const radio = load({
 }, ["handleReceivedRadioPayload"]);
 allowed = false;
 radio.handleReceivedRadioPayload(packet);
-assert.equal(payloads.length, 0);
+assert.equal(payloads.length, packet.length, "Route bytes to the image demultiplexer even outside the HK window");
 allowed = true;
 radio.handleReceivedRadioPayload(packet);
-assert.deepEqual(payloads, Array.from(packet));
+assert.deepEqual(payloads, [...packet, ...packet]);
 
 assert.match(html, /<option value="transparent">Basic mode \(AP=0\)<\/option>/);
 assert.match(html, /<option value="api">Extension mode \(AP=1\)<\/option>/);
