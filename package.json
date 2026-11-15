@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/verify-protocol.mjs && node tests/verify-skyview.mjs && node tests/verify-transparent-rssi.mjs && node tests/verify-pass-window.mjs && node tests/verify-receiver-data.mjs"
+    "test": "node tests/verify-protocol.mjs && node tests/verify-skyview.mjs && node tests/verify-transparent-rssi.mjs && node tests/verify-pass-window.mjs && node tests/verify-receiver-data.mjs && node tests/verify-standby-display.mjs"
   }
 }

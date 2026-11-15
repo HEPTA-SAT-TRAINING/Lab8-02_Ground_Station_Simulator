@@ -345,6 +345,7 @@ const textTelemetryState = {
 let displayedTextTelemetry = null;
 const textDecoderContext = {
   backendTelemetryState: textTelemetryState,
+  missionTelemetryEnabled: null,
   isTelemetryDisplayAllowed: () => true,
   updateTelemetryDisplayFromObject: state => { displayedTextTelemetry = { ...state }; },
 };

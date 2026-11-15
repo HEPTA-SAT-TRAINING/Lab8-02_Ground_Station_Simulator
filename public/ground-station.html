@@ -3289,6 +3289,13 @@
       receivedNumber: null
     };
     let currentTelemetryModeDisplay = { text: "Standby", className: "normal" };
+    let confirmedTelemetryMode = null;
+    let missionTelemetryEnabled = null;
+    const MISSION_TELEMETRY_FIELDS = {
+      accX: "tmAccXValue", accY: "tmAccYValue", accZ: "tmAccZValue",
+      gyroX: "tmGyroXValue", gyroY: "tmGyroYValue", gyroZ: "tmGyroZValue",
+      magX: "tmMagXValue", magY: "tmMagYValue", magZ: "tmMagZValue"
+    };
     let lastBackendRawHexKey = "";
     let lastBackendDataKey = "";
     const telemetryTextDecoder = new TextDecoder();
@@ -3478,9 +3485,15 @@
 
     function updateTelemetryStatusDisplays(decoded) {
       if (!isTelemetryDisplayAllowed()) return;
+      if (decoded.modeFromPacketType) {
+        confirmedTelemetryMode = null;
+        setMissionTelemetryEnabled(decoded.modeText === "Mission");
+      }
       if (packetUi.tmModeValue) {
-        const powerMode = decoded.modeFromPacketType ? null : getPowerModeFromVoltage(decoded.voltageV);
-        const displayMode = powerMode || {
+        // An actual mode response takes precedence over a voltage-only guess.
+        const explicitMode = decoded.modeFromPacketType ? null : confirmedTelemetryMode;
+        const powerMode = decoded.modeFromPacketType || explicitMode ? null : getPowerModeFromVoltage(decoded.voltageV);
+        const displayMode = explicitMode || powerMode || {
           text: decoded.modeText || "--",
           className: decoded.modeClassName || ""
         };
@@ -3510,7 +3523,7 @@
       const mode = packetTypeMode || decodeMode(payload[0]);
       const voltageRaw = ((payload[1] & 0xFF) << 8) | (payload[2] & 0xFF);
       const temperatureRaw = readInt16BE(payload[3], payload[4]);
-      const hasMissionTelemetry = payload.length >= TELEMETRY_PACKET.missionPayloadLength;
+      const hasMissionTelemetry = mode.text === "Mission" && payload.length >= TELEMETRY_PACKET.missionPayloadLength;
 
       const accXRaw = hasMissionTelemetry ? readInt16BE(payload[5], payload[6]) : null;
       const accYRaw = hasMissionTelemetry ? readInt16BE(payload[7], payload[8]) : null;
@@ -3573,6 +3586,23 @@
       if (el) el.textContent = text;
     }
 
+    function setMissionTelemetryEnabled(enabled) {
+      if (missionTelemetryEnabled === enabled) return;
+      missionTelemetryEnabled = enabled;
+      // Drop both cached values and old curves. Returning to Mission must wait
+      // for fresh IMU bytes, not resurrect the last observation.
+      for (const [key, field] of Object.entries(MISSION_TELEMETRY_FIELDS)) {
+        backendTelemetryState[key] = null;
+        setTelemetryText(packetUi[field], "—");
+      }
+      telemetryHistory = telemetryHistory.map(point => {
+        const next = { ...point };
+        for (const key of Object.keys(MISSION_TELEMETRY_FIELDS)) delete next[key];
+        return next;
+      });
+      drawTelemetryGraphs();
+    }
+
     function applyTelemetryDataWarning(decoded) {
       // For the supplied Pt100 Flightware formula, ADC=0 produces 125.6°C.
       // Keep the reported number, but do not present it as a validated sensor.
@@ -3621,17 +3651,17 @@
       setTelemetryText(packetUi.tmIbusValue, decoded.busCurrentA === null ? "-- A" : `${decoded.busCurrentA.toFixed(3)} A`);
       setTelemetryText(packetUi.tmIchgValue, decoded.chargeCurrentA === null ? "-- A" : `${decoded.chargeCurrentA.toFixed(3)} A`);
 
-      setTelemetryText(packetUi.tmAccXValue, decoded.accX === null ? "--" : decoded.accX.toFixed(2) + " m/s2");
-      setTelemetryText(packetUi.tmAccYValue, decoded.accY === null ? "--" : decoded.accY.toFixed(2) + " m/s2");
-      setTelemetryText(packetUi.tmAccZValue, decoded.accZ === null ? "--" : decoded.accZ.toFixed(2) + " m/s2");
+      setTelemetryText(packetUi.tmAccXValue, decoded.accX === null ? "—" : decoded.accX.toFixed(2) + " m/s2");
+      setTelemetryText(packetUi.tmAccYValue, decoded.accY === null ? "—" : decoded.accY.toFixed(2) + " m/s2");
+      setTelemetryText(packetUi.tmAccZValue, decoded.accZ === null ? "—" : decoded.accZ.toFixed(2) + " m/s2");
 
-      setTelemetryText(packetUi.tmGyroXValue, decoded.gyroX === null ? "--" : decoded.gyroX.toFixed(1) + " deg/s");
-      setTelemetryText(packetUi.tmGyroYValue, decoded.gyroY === null ? "--" : decoded.gyroY.toFixed(1) + " deg/s");
-      setTelemetryText(packetUi.tmGyroZValue, decoded.gyroZ === null ? "--" : decoded.gyroZ.toFixed(1) + " deg/s");
+      setTelemetryText(packetUi.tmGyroXValue, decoded.gyroX === null ? "—" : decoded.gyroX.toFixed(1) + " deg/s");
+      setTelemetryText(packetUi.tmGyroYValue, decoded.gyroY === null ? "—" : decoded.gyroY.toFixed(1) + " deg/s");
+      setTelemetryText(packetUi.tmGyroZValue, decoded.gyroZ === null ? "—" : decoded.gyroZ.toFixed(1) + " deg/s");
 
-      setTelemetryText(packetUi.tmMagXValue, decoded.magX === null ? "--" : decoded.magX.toFixed(1) + " uT");
-      setTelemetryText(packetUi.tmMagYValue, decoded.magY === null ? "--" : decoded.magY.toFixed(1) + " uT");
-      setTelemetryText(packetUi.tmMagZValue, decoded.magZ === null ? "--" : decoded.magZ.toFixed(1) + " uT");
+      setTelemetryText(packetUi.tmMagXValue, decoded.magX === null ? "—" : decoded.magX.toFixed(1) + " uT");
+      setTelemetryText(packetUi.tmMagYValue, decoded.magY === null ? "—" : decoded.magY.toFixed(1) + " uT");
+      setTelemetryText(packetUi.tmMagZValue, decoded.magZ === null ? "—" : decoded.magZ.toFixed(1) + " uT");
       applyTelemetryDataWarning(decoded);
 
       const historyPoint = {
@@ -3681,6 +3711,13 @@
         magZ: readNumeric("magZ"),
         receivedNumber: readNumeric("receivedNumber")
       };
+
+      if (missionTelemetryEnabled === false) {
+        for (const [key, field] of Object.entries(MISSION_TELEMETRY_FIELDS)) {
+          decoded[key] = null;
+          setTelemetryText(packetUi[field], "—");
+        }
+      }
 
       const hasAnyValue = [
         decoded.voltageV,
@@ -3795,6 +3832,7 @@
         const stateKey = keyMap[match[1].toUpperCase()];
         const value = Number(match[2]);
         if (!stateKey || !Number.isFinite(value)) continue;
+        if (missionTelemetryEnabled === false && Object.hasOwn(MISSION_TELEMETRY_FIELDS, stateKey)) continue;
         backendTelemetryState[stateKey] = value;
         matched = true;
       }
@@ -4370,7 +4408,9 @@
         ctx.fillStyle = CANVAS_THEME.textMuted;
         ctx.font = "9px Segoe UI, Noto Sans JP, sans-serif";
         ctx.textAlign = "center";
-        //ctx.fillText("Waiting for telemetry", leftPad + plotW / 2, topPad + plotH / 2 + 3);
+        if (missionTelemetryEnabled === false && graphKeys.every(key => Object.hasOwn(MISSION_TELEMETRY_FIELDS, key))) {
+          ctx.fillText("—", leftPad + plotW / 2, topPad + plotH / 2 + 3);
+        }
         ctx.restore();
       }
 
@@ -5018,6 +5058,8 @@
           ? { text: "Standby", className: "normal" }
           : null;
       if (!displayMode || !packetUi.tmModeValue) return false;
+      confirmedTelemetryMode = displayMode;
+      setMissionTelemetryEnabled(normalizedMode === "ON");
       updateTelemetryStatusDisplays({
         modeText: displayMode.text,
         modeClassName: displayMode.className,
@@ -5729,6 +5771,8 @@
         }
 
         await xbeePort.open({ baudRate: XBEE_BAUD_RATE });
+        confirmedTelemetryMode = null;
+        missionTelemetryEnabled = null;
 
         xbeeWriter = xbeePort.writable.getWriter();
 
@@ -5764,6 +5808,8 @@
       xbeeReadLoopActive = false;
       stopSimulatedRssi();
       stopDemoTelemetry();
+      confirmedTelemetryMode = null;
+      missionTelemetryEnabled = null;
       imageStreamReceiver?.reset();
       pendingImageReceiverChunks = [];
       pendingImageReceiverBytes = 0;

@@ -101,6 +101,11 @@ gate, not a change to HEPTA firmware or a physical RF cutoff. Ground-receiver
 RSSI is not HK: it is read and displayed without a pass, uses wall-clock history,
 and is not cleared or shifted when a pass/TLE changes or LOS is reached.
 The separate command log is also retained when an observation window ends.
+After a confirmed `b` / `STANDBY_MODE` response, the nine-axis values AX–MZ
+display a dash and their old curves/cached readings are cleared. Voltage,
+temperature and EPS HK continue updating. A confirmed `a` / `MISSION_MODE`
+response enables new nine-axis readings; old values are not replayed. Explicit
+mode responses take precedence over a voltage-based Power Save guess.
 Photo framing is demultiplexed before the HK gate. `IMG_BEGIN` and image
 packets continue through AOS/LOS and pass/TLE changes; these events do not
 reset an image in progress or hide the last completed photo.
