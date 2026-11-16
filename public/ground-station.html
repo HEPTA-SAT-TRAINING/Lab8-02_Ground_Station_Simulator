@@ -1717,6 +1717,10 @@
       gap: 6px;
     }
 
+    .image-receive-status:empty {
+      display: none;
+    }
+
     .image-receive-progress-bar {
       width: 100%;
       height: 13px;
@@ -2712,7 +2716,7 @@
           <div class="panel-title">Photo Reception</div>
           <div class="panel-body image-receive-body">
             <div class="image-receive-info">
-              <div class="image-receive-status" id="image-receive-status">Use the p command to capture a photo</div>
+              <div class="image-receive-status" id="image-receive-status"></div>
               <div class="image-receive-progress" id="image-receive-progress">
                 <span id="image-receive-progress-text">Waiting</span>
                 <progress class="image-receive-progress-bar" id="image-receive-progress-bar" max="1" value="0" hidden></progress>

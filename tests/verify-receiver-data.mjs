@@ -128,6 +128,9 @@ assert.match(ui.tmTempValue.attributes["aria-label"], /not validated/);
 
 assert.doesNotMatch(html, /id="transparent-rssi-auto"|id="read-rssi-button"/);
 assert.doesNotMatch(html, /id="hk-format-select"|Binary HK format|Flightware physical units|Course ADC format/);
+assert.doesNotMatch(html, /Use the p command to capture a photo/);
+assert.match(html, /id="image-receive-status"><\/div>/, "Keep the dynamic photo status, without an initial command hint");
+assert.match(html, /\.image-receive-status:empty\s*\{\s*display: none/, "Do not leave an empty hint box");
 assert.match(html, /class="visually-hidden" id="rssi-read-status"/);
 assert.doesNotMatch(extract("clearTelemetryReceiveDisplays"), /rssiHistory\s*=|rssiValueEl/);
 assert.doesNotMatch(extract("updateTelemetryReceiveGate"), /rssiReadStatus|seenPayload/);
