@@ -44,7 +44,6 @@ let connected = true;
 let elevation = 30;
 let resets = 0;
 let clears = 0;
-const waiting = element();
 const gate = load({
   Date, Number, AOS_LOS_ELEVATION_THRESHOLD_DEG: 5,
   isReceiverConnected: () => connected,
@@ -59,7 +58,7 @@ const gate = load({
   },
   clearTelemetryReceiveDisplays: () => { clears++; },
   telemetryGateWasAllowed: null, telemetryGatePassKey: null,
-  packetUi: { logList: { querySelector: () => waiting } }, packetLogHistory: [],
+  packetUi: { logList: {} }, packetLogHistory: [],
   readRssiButton: { disabled: false }, xbeeTransparentSession: {},
   rssiReadStatus: element(), isXbeeApiMode: () => false, xbeePort: null,
   setRssiReadStatus: () => {},
@@ -115,6 +114,7 @@ assert.equal(fields.tmModeValue.textContent, "--");
 assert.equal(fields.tmVoltageValue.textContent, "-- V");
 assert.equal(fields.lastTime.textContent, "--");
 assert.equal(clear.backendTelemetryState.temperatureC, null);
+assert.equal(clear.packetUi.logList.innerHTML, "", "Closed/reset log remains blank instead of displaying receiver/pass instructions");
 assert.equal(clear.imageReceivePreview.hidden, false, "Keep the last received photo visible");
 assert.equal(clear.imageDownloadLink.hidden, false);
 assert.equal(imageResets, 0, "Closing an HK window must not reset photo reception");
@@ -182,6 +182,8 @@ assert.deepEqual(payloads, [...packet, ...packet]);
 assert.match(html, /<option value="transparent">Basic mode \(AP=0\)<\/option>/);
 assert.match(html, /<option value="api">Extension mode \(AP=1\)<\/option>/);
 assert.doesNotMatch(html, /Real RSSI/);
+assert.doesNotMatch(html, /Received HEX log|packet-log-header|packet-wait/, "Received Data must contain no extra title or waiting/instruction row");
+assert.match(html, /id="packet-log-list"><\/div>/, "Start with an empty log; actual packets still populate this list");
 assert.doesNotMatch(html, /telemetry-gate-status/, "Do not display a telemetry pass-status banner; retain the receive gate itself");
 assert.match(html, /\.tm-value-body\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/, "Values must still fill the panel without the banner's intrinsic width");
 assert.match(html, /isBusy: \(\) => imageStreamReceiver/);
