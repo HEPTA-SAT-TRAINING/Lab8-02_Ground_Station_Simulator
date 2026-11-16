@@ -183,6 +183,7 @@ assert.match(html, /<option value="transparent">Basic mode \(AP=0\)<\/option>/);
 assert.match(html, /<option value="api">Extension mode \(AP=1\)<\/option>/);
 assert.doesNotMatch(html, /Real RSSI/);
 assert.doesNotMatch(html, /telemetry-gate-status/, "Do not display a telemetry pass-status banner; retain the receive gate itself");
+assert.match(html, /\.tm-value-body\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/, "Values must still fill the panel without the banner's intrinsic width");
 assert.match(html, /isBusy: \(\) => imageStreamReceiver/);
 assert.doesNotMatch(html, /isBusy: \(\) => !isTelemetryDisplayAllowed/);
 assert.doesNotMatch(html, /id="transparent-rssi-auto"|id="read-rssi-button"/);
