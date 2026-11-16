@@ -1295,23 +1295,11 @@
 
     .tm-value-body {
       display: grid;
-      grid-template-rows: auto minmax(0, 1fr);
-      gap: 5px;
+      grid-template-rows: minmax(0, 1fr);
       text-align: left;
       color: #c8d8e3;
       padding: 8px 9px;
       overflow: hidden;
-    }
-
-    .telemetry-gate-status {
-      color: #385d87;
-      font-size: 11px;
-      line-height: 1.4;
-      overflow-wrap: anywhere;
-    }
-
-    .telemetry-gate-status[data-state="observing"] {
-      color: #187341;
     }
 
     .tm-value-grid {
@@ -2621,7 +2609,6 @@
         <div class="panel" data-panel-id="telemetry-values">
           <div class="panel-title">Telemetry Values</div>
           <div class="panel-body tm-value-body">
-            <div class="telemetry-gate-status" id="telemetry-gate-status" role="status">Reserve a pass above to observe telemetry.</div>
             <div class="tm-value-grid">
               <div class="tm-status-card">
                 <div class="tm-status-label">Mode</div>
@@ -4046,11 +4033,6 @@
 
       telemetryGateWasAllowed = allowed;
       telemetryGatePassKey = gate.passKey;
-      const status = document.getElementById("telemetry-gate-status");
-      if (status) {
-        if (status.textContent !== gate.message) status.textContent = gate.message;
-        if (status.dataset.state !== gate.state) status.dataset.state = gate.state;
-      }
       if (!allowed && packetUi.logList && packetLogHistory.length === 0) {
         const waiting = packetUi.logList.querySelector(".packet-wait");
         if (waiting) waiting.textContent = gate.message;

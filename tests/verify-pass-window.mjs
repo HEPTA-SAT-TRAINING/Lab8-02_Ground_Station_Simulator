@@ -44,7 +44,6 @@ let connected = true;
 let elevation = 30;
 let resets = 0;
 let clears = 0;
-const gateStatus = element();
 const waiting = element();
 const gate = load({
   Date, Number, AOS_LOS_ELEVATION_THRESHOLD_DEG: 5,
@@ -60,7 +59,6 @@ const gate = load({
   },
   clearTelemetryReceiveDisplays: () => { clears++; },
   telemetryGateWasAllowed: null, telemetryGatePassKey: null,
-  document: { getElementById: () => gateStatus },
   packetUi: { logList: { querySelector: () => waiting } }, packetLogHistory: [],
   readRssiButton: { disabled: false }, xbeeTransparentSession: {},
   rssiReadStatus: element(), isXbeeApiMode: () => false, xbeePort: null,
@@ -68,18 +66,18 @@ const gate = load({
   activePassResetKey: null, resetRxCommandCount: () => { resets++; }
 }, ["evaluateTelemetryPassWindow", "getCurrentSatelliteElevationDegForTelemetryGate", "getTelemetryReceiveGateState", "isTelemetryDisplayAllowed", "updatePassBasedRxReset", "updateTelemetryReceiveGate"]);
 assert.equal(gate.updateTelemetryReceiveGate(), false);
-assert.equal(gateStatus.dataset.state, "before-aos");
+assert.equal(gate.getTelemetryReceiveGateState().state, "before-aos");
 const initialClears = clears;
 gate.updateTelemetryReceiveGate();
 assert.equal(clears, initialClears, "Do not clear continuously while the same gate stays closed");
 simulationTime = 1500;
 assert.equal(gate.updateTelemetryReceiveGate(), true);
-assert.equal(gateStatus.dataset.state, "observing");
+assert.equal(gate.getTelemetryReceiveGateState().state, "observing");
 assert.equal(resets, 1);
 simulationTime = 2000;
 assert.equal(gate.updateTelemetryReceiveGate(), false);
 assert.equal(clears, initialClears + 1);
-assert.equal(gateStatus.dataset.state, "after-los");
+assert.equal(gate.getTelemetryReceiveGateState().state, "after-los");
 simulationTime = 1500;
 gate.updateTelemetryReceiveGate();
 gate.currentTle.line1 = "different satellite";
@@ -87,7 +85,7 @@ gate.updateTelemetryReceiveGate();
 assert.equal(clears, initialClears + 2, "Switching a TLE/pass clears old visible data even if both windows are active");
 gate.selectedPassIndex = -1;
 assert.equal(gate.updateTelemetryReceiveGate(), false);
-assert.equal(gateStatus.dataset.state, "no-pass");
+assert.equal(gate.getTelemetryReceiveGateState().state, "no-pass");
 gate.selectedPassIndex = 0;
 elevation = 4;
 assert.equal(gate.getTelemetryReceiveGateState().state, "below-mask");
@@ -184,6 +182,7 @@ assert.deepEqual(payloads, [...packet, ...packet]);
 assert.match(html, /<option value="transparent">Basic mode \(AP=0\)<\/option>/);
 assert.match(html, /<option value="api">Extension mode \(AP=1\)<\/option>/);
 assert.doesNotMatch(html, /Real RSSI/);
+assert.doesNotMatch(html, /telemetry-gate-status/, "Do not display a telemetry pass-status banner; retain the receive gate itself");
 assert.match(html, /isBusy: \(\) => imageStreamReceiver/);
 assert.doesNotMatch(html, /isBusy: \(\) => !isTelemetryDisplayAllowed/);
 assert.doesNotMatch(html, /id="transparent-rssi-auto"|id="read-rssi-button"/);
